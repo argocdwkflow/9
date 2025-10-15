@@ -1,0 +1,427 @@
+Top ! Voici tous les fichiers YAML du projet “pré-requis + check RPMDB”, prêts à copier-coller dans ton repo (mêmes chemins/nommages).
+J’ai volontairement exclu les fichiers non-YAML (ex: hosts.ini).
+
+collections/requirements.yml
+
+---
+collections:
+  - name: ansible.posix
+  - name: community.general
+
+group_vars/all.yml
+
+---
+satellite_fqdn: "satellite.example.com"
+capsule_fqdns: []
+
+# Ports requis (sortants) vers Satellite/Capsules
+satellite_required_ports: [443]
+
+# Espace disque minimum (Mo)
+min_space_mb:
+  var: 1024
+  tmp: 256
+
+# RHSM
+min_subscription_manager_version: "1.29.0"
+
+# Proxy (optionnel)
+use_proxy: false
+http_proxy: ""
+https_proxy: ""
+
+# Politique d'échec
+failure_policy: "hard"   # hard|soft
+
+# RPM DB check
+rpmdb_auto_fix: true
+rpmdb_backup_parent: "/var/backups"
+rpmdb_query_timeout: 120
+
+# Emplacement du rapport JSON
+summary_output_path: "/var/tmp/satellite_prereqs_summary.json"
+
+playbooks/precheck_satellite.yml
+
+---
+- name: "Pré-requis Satellite + Check RPMDB"
+  hosts: targets
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: satellite_prereqs
+
+roles/satellite_prereqs/defaults/main.yml
+
+---
+satellite_fqdn: ""
+capsule_fqdns: []
+satellite_required_ports: [443]
+
+min_space_mb:
+  var: 1024
+  tmp: 256
+
+min_subscription_manager_version: "1.29.0"
+use_proxy: false
+http_proxy: ""
+https_proxy: ""
+
+failure_policy: "hard"   # "hard" or "soft"
+summary_output_path: "/var/tmp/satellite_prereqs_summary.json"
+
+# RPM DB check
+rpmdb_auto_fix: true
+rpmdb_backup_parent: "/var/backups"
+rpmdb_query_timeout: 120
+
+roles/satellite_prereqs/vars/main.yml
+
+---
+_supported_os_family: "RedHat"
+_supported_major_versions: [7, 8, 9]
+_sat_api_probe: "https://{{ satellite_fqdn }}/katello/api/status"
+_sat_ca_rpm: "https://{{ satellite_fqdn }}/pub/katello-ca-consumer-latest.noarch.rpm"
+
+roles/satellite_prereqs/tasks/main.yml
+
+---
+- name: "Check & facts"
+  import_tasks: 00_facts.yml
+
+- name: "DNS & HTTPS reachability"
+  import_tasks: 10_dns_https.yml
+
+- name: "System sanity (time, space, fqdn)"
+  import_tasks: 20_system.yml
+
+- name: "RPM database health"
+  import_tasks: 25_rpmdb.yml
+
+- name: "Package manager & RHSM"
+  import_tasks: 30_package_mgr.yml
+
+- name: "Summary report"
+  import_tasks: 90_summary.yml
+
+roles/satellite_prereqs/tasks/00_facts.yml
+
+---
+- name: "Vérifier OS supporté"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == _supported_os_family
+      - (ansible_facts.distribution_major_version | int) in _supported_major_versions
+    fail_msg: "OS non supporté: {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+    success_msg: "OS supporté: {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+
+- name: "Vérifier exécution avec privilèges (become)"
+  ansible.builtin.assert:
+    that: ansible_facts.user_id == 0
+    fail_msg: "Ce rôle doit s'exécuter en root (become: true)."
+    success_msg: "Exécution en root confirmée."
+
+- name: "Initialiser structure de résultats"
+  ansible.builtin.set_fact:
+    sat_precheck:
+      os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+      fqdn: "{{ ansible_facts.fqdn }}"
+      ipv4: "{{ ansible_facts['default_ipv4'] | default({}) }}"
+      satellite_fqdn: "{{ satellite_fqdn }}"
+      capsule_fqdns: "{{ capsule_fqdns }}"
+      checks: {}
+
+roles/satellite_prereqs/tasks/10_dns_https.yml
+
+---
+- name: "DNS: résolution {{ satellite_fqdn }}"
+  ansible.builtin.command: "getent hosts {{ satellite_fqdn }}"
+  changed_when: false
+  register: _dns_sat
+  failed_when: false
+
+- name: "Enregistrer état DNS Satellite"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({'dns_satellite': (_dns_sat.rc == 0)})}, recursive=True) }}"
+
+- name: "DNS: résolution Capsules"
+  when: capsule_fqdns|length > 0
+  block:
+    - name: "Résolution capsules (boucle)"
+      ansible.builtin.command: "getent hosts {{ item }}"
+      changed_when: false
+      failed_when: false
+      loop: "{{ capsule_fqdns }}"
+      register: _dns_caps
+
+    - name: "Enregistrer état DNS Capsules"
+      ansible.builtin.set_fact:
+        sat_precheck: >-
+          {{
+            sat_precheck | combine({'checks': sat_precheck.checks | combine({
+              'dns_capsules': dict( _dns_caps.results | map(attribute='item') | list
+                                    | zip( _dns_caps.results | map(attribute='rc') | map('equalto', 0) | list ) )
+            })}, recursive=True)
+          }}
+
+- name: "TCP {{ satellite_fqdn }}:443 joignable"
+  ansible.builtin.wait_for:
+    host: "{{ satellite_fqdn }}"
+    port: 443
+    timeout: 5
+    state: started
+  register: _tcp443
+  failed_when: false
+
+- name: "Probe API Katello"
+  ansible.builtin.uri:
+    url: "{{ _sat_api_probe }}"
+    method: GET
+    validate_certs: yes
+    status_code: 200
+  register: _api_probe
+  failed_when: false
+
+- name: "Enregistrer état connectivité HTTPS"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({
+      'tcp_443': (_tcp443 is succeeded),
+      'katello_api_ok': (_api_probe.status|default(0)) == 200
+    })}, recursive=True) }}"
+
+roles/satellite_prereqs/tasks/20_system.yml
+
+---
+- name: "FQDN cohérent"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.fqdn is match('^.+\\..+$')
+    fail_msg: "Le FQDN n'est pas défini (hostname court détecté)."
+    success_msg: "FQDN OK: {{ ansible_facts.fqdn }}"
+
+- name: "Synchronisation NTP (timedatectl)"
+  ansible.builtin.command: "timedatectl show -p NTPSynchronized --value"
+  changed_when: false
+  register: _ntp_sync
+  failed_when: false
+
+- name: "Calcul espace disque requis"
+  vars:
+    _var_mb: "{{ (ansible_facts.mounts | selectattr('mount','equalto','/var') | list | first | default({'size_available':0})).size_available // 1024 // 1024 }}"
+    _tmp_mb: "{{ (ansible_facts.mounts | selectattr('mount','equalto','/tmp') | list | first | default({'size_available':0})).size_available // 1024 // 1024 }}"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({
+      'ntp_synced': (_ntp_sync.stdout | lower) == 'yes',
+      'space_ok': {
+        'var_ok': (_var_mb | int) >= (min_space_mb.var | int),
+        'tmp_ok': (_tmp_mb | int) >= (min_space_mb.tmp | int),
+        'var_free_mb': _var_mb | int,
+        'tmp_free_mb': _tmp_mb | int
+      }
+    })}, recursive=True) }}"
+
+roles/satellite_prereqs/tasks/25_rpmdb.yml
+
+---
+# 1) Infos de base
+- name: "Récupérer version de rpm"
+  ansible.builtin.command: "rpm --version"
+  changed_when: false
+  register: _rpm_ver
+  failed_when: false
+
+- name: "Récupérer chemin de la base rpm (_dbpath)"
+  ansible.builtin.command: "rpm --eval '%{_dbpath}'"
+  changed_when: false
+  register: _rpm_dbpath
+  failed_when: false
+
+# 2) Détection de corruption
+- name: "Tester interrogation de la base (rpm -qa)"
+  ansible.builtin.shell: "timeout {{ rpmdb_query_timeout }}s rpm -qa --nodigest --nosignature >/dev/null"
+  args:
+    warn: false
+  register: _rpm_qa
+  changed_when: false
+  failed_when: false
+
+- name: "Détecter indices d'erreurs rpmdb"
+  ansible.builtin.set_fact:
+    _rpmdb_error_text: "{{ (_rpm_qa.stderr | default('')) + ' ' + (_rpm_qa.stdout | default('')) }}"
+    _rpmdb_suspected_corrupt: >-
+      {{
+        (_rpm_qa.rc != 0)
+        or (_rpm_qa.stdout is search('rpmdb:\\s') )
+        or (_rpm_qa.stderr is search('rpmdb:\\s') )
+        or (_rpm_qa.stderr is search('BDB0|DB_RUNRECOVERY|database disk image is malformed|sqlite error|I/O error') )
+        or (_rpm_qa.stderr | lower is search('corrupt|corruption') )
+      }}
+
+# 3) Vérifier verrous/transactions en cours
+- name: "Lister processus rpm/dnf/yum en cours"
+  ansible.builtin.shell: "ps -eo comm | egrep -E '^(rpm|dnf|yum|packagekitd)$' || true"
+  changed_when: false
+  register: _rpm_procs
+
+- name: "Vérifier lock .rpm.lock"
+  ansible.builtin.stat:
+    path: "{{ _rpm_dbpath.stdout | default('/var/lib/rpm') }}/.rpm.lock"
+  register: _rpm_lock
+
+# 4) Sauvegarde + réparation (optionnelle)
+- name: "Créer dossier de sauvegarde rpmdb"
+  when: _rpmdb_suspected_corrupt and rpmdb_auto_fix and (_rpm_procs.stdout | trim == '') and (not _rpm_lock.stat.exists | default(false))
+  ansible.builtin.file:
+    path: "{{ rpmdb_backup_parent }}/rpmdb-{{ ansible_date_time.date }}-{{ ansible_date_time.time }}"
+    state: directory
+    mode: "0750"
+  register: _rpmdb_bkdir
+
+- name: "Sauvegarder contenu rpmdb"
+  when: _rpmdb_bkdir is defined
+  ansible.builtin.command: >
+    rsync -a --delete "{{ _rpm_dbpath.stdout | default('/var/lib/rpm') }}/" "{{ _rpmdb_bkdir.path }}/"
+  changed_when: true
+
+- name: "Reconstruire la base rpm (rpm --rebuilddb)"
+  when: _rpmdb_bkdir is defined
+  ansible.builtin.command: "rpm --rebuilddb"
+  changed_when: true
+  register: _rpm_rebuild
+  failed_when: false
+
+- name: "Nettoyer métadonnées du gestionnaire de paquets"
+  when: _rpmdb_bkdir is defined
+  ansible.builtin.command: "{{ (ansible_facts.pkg_mgr == 'dnf') | ternary('dnf', 'yum') }} clean all"
+  changed_when: true
+  failed_when: false
+
+# 5) Re-test après réparation
+- name: "Re-tester interrogation de la base (post-fix)"
+  when: _rpmdb_bkdir is defined
+  ansible.builtin.shell: "timeout {{ rpmdb_query_timeout }}s rpm -qa --nodigest --nosignature >/dev/null"
+  args:
+    warn: false
+  changed_when: false
+  register: _rpm_qa_after
+  failed_when: false
+
+# 6) Enregistrer l'état dans le rapport
+- name: "Synthèse rpmdb"
+  vars:
+    _dbpath: "{{ _rpm_dbpath.stdout | default('/var/lib/rpm') }}"
+    _repaired_ok: "{{ (_rpm_qa_after.rc | default(1)) == 0 }}"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({
+      'rpmdb': {
+        'rpm_version': (_rpm_ver.stdout | default('unknown')),
+        'dbpath': _dbpath,
+        'healthy': (not _rpmdb_suspected_corrupt) or (_rpmdb_suspected_corrupt and _repaired_ok),
+        'suspected_corrupt': _rpmdb_suspected_corrupt,
+        'repaired': (_rpmdb_suspected_corrupt and rpmdb_auto_fix and (_rpmdb_bkdir is defined) and _repaired_ok) | bool,
+        'repair_attempted': (_rpmdb_bkdir is defined) | bool,
+        'error_sample': (_rpmdb_error_text | trim)[:400]
+      }
+    })}, recursive=True) }}"
+
+roles/satellite_prereqs/tasks/30_package_mgr.yml
+
+---
+- name: "Détecter gestionnaire de paquets"
+  ansible.builtin.set_fact:
+    _pkg_mgr: "{{ 'dnf' if ansible_facts.pkg_mgr == 'dnf' else 'yum' }}"
+
+- name: "Présence subscription-manager"
+  ansible.builtin.command: "rpm -q subscription-manager"
+  changed_when: false
+  register: _rhsm_rpm
+  failed_when: false
+
+- name: "Version subscription-manager"
+  ansible.builtin.shell: "rpm -q --qf '%{VERSION}' subscription-manager"
+  changed_when: false
+  register: _rhsm_ver
+  failed_when: _rhsm_rpm.rc != 0
+
+- name: "Déjà enregistré ?"
+  ansible.builtin.command: "subscription-manager identity"
+  changed_when: false
+  register: _sm_identity
+  failed_when: false
+
+- name: "CA Katello téléchargeable ?"
+  ansible.builtin.uri:
+    url: "{{ _sat_ca_rpm }}"
+    method: HEAD
+    follow_redirects: safe
+    status_code: [200]
+  register: _ca_head
+  failed_when: false
+
+- name: "Synthèse package/rhsm"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({
+      'subscription_manager_present': (_rhsm_rpm.rc == 0),
+      'subscription_manager_version_ok': (_rhsm_rpm.rc == 0) and
+        (_rhsm_ver.stdout is version(min_subscription_manager_version, '>=')),
+      'already_registered': (_sm_identity.rc == 0),
+      'katello_ca_available': (_ca_head.status | default(0)) == 200,
+      'pkg_mgr': _pkg_mgr
+    })}, recursive=True) }}"
+
+roles/satellite_prereqs/tasks/90_summary.yml
+
+---
+- name: "Calculer statut global"
+  vars:
+    c: "{{ sat_precheck.checks }}"
+    blockers:
+      - "{{ not c.get('dns_satellite', false) }}"
+      - "{{ not c.get('tcp_443', false) }}"
+      - "{{ not c.get('katello_api_ok', false) }}"
+      - "{{ not c.get('subscription_manager_present', false) }}"
+      - "{{ not c.get('subscription_manager_version_ok', false) }}"
+      - "{{ not c.get('space_ok', {}).get('var_ok', false) }}"
+      - "{{ not c.get('space_ok', {}).get('tmp_ok', false) }}"
+      - "{{ not c.get('ntp_synced', false) }}"
+      - "{{ not c.get('rpmdb', {}).get('healthy', false) }}"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'overall_ok': (blockers | select('equalto', true) | list | length) == 0}, recursive=True) }}"
+
+- name: "Écrire le rapport JSON"
+  ansible.builtin.copy:
+    dest: "{{ summary_output_path }}"
+    mode: "0644"
+    content: |
+      {{
+        {
+          "host": inventory_hostname,
+          "timestamp": ansible_date_time.iso8601,
+          "satellite": {
+            "satellite_fqdn": satellite_fqdn,
+            "capsules": capsule_fqdns
+          },
+          "facts": {
+            "os": sat_precheck.os,
+            "fqdn": sat_precheck.fqdn
+          },
+          "checks": sat_precheck.checks,
+          "overall_ok": sat_precheck.overall_ok | default(false)
+        } | to_nice_json
+      }}
+
+- name: "Politique d'échec ({{ failure_policy }})"
+  when: failure_policy == 'hard'
+  ansible.builtin.assert:
+    that: sat_precheck.overall_ok
+    fail_msg: >
+      Pré-requis Satellite non satisfaits. Consultez {{ summary_output_path }}
+      pour les détails et corrigez avant l'intégration.
+    success_msg: "Tous les pré-requis sont OK."
+
+
+---
+
+Si tu veux, je peux aussi te donner un playbook d’exemple (YAML) pour exécuter uniquement le check RPMDB via --tags rpmdb en scindant le rôle, mais comme demandé, je t’ai listé ici tous les YAML nécessaires aux prérequis + rpmdb.
+
