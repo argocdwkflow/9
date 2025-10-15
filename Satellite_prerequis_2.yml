@@ -1,0 +1,178 @@
+Super — voici tous les YAML complets à copier/coller, avec le paramètre de contrôle auto_install_subscription_manager et la logique d’installation conditionnelle déjà intégrée.
+
+group_vars/all.yml (mise à jour)
+
+---
+satellite_fqdn: "satellite.example.com"
+capsule_fqdns: []
+
+# Ports requis (sortants) vers Satellite/Capsules
+satellite_required_ports: [443]
+
+# Espace disque minimum (Mo)
+min_space_mb:
+  var: 1024
+  tmp: 256
+
+# RHSM
+min_subscription_manager_version: "1.29.0"
+
+# Installer automatiquement subscription-manager s'il manque ?
+auto_install_subscription_manager: true
+
+# Proxy (optionnel)
+use_proxy: false
+http_proxy: ""
+https_proxy: ""
+
+# Politique d'échec
+failure_policy: "hard"   # hard|soft
+
+# RPM DB check
+rpmdb_auto_fix: true
+rpmdb_backup_parent: "/var/backups"
+rpmdb_query_timeout: 120
+
+# Emplacement du rapport JSON
+summary_output_path: "/var/tmp/satellite_prereqs_summary.json"
+
+roles/satellite_prereqs/defaults/main.yml (mise à jour)
+
+---
+satellite_fqdn: ""
+capsule_fqdns: []
+satellite_required_ports: [443]
+
+min_space_mb:
+  var: 1024
+  tmp: 256
+
+min_subscription_manager_version: "1.29.0"
+
+# Installer automatiquement subscription-manager s'il est absent
+auto_install_subscription_manager: true
+
+use_proxy: false
+http_proxy: ""
+https_proxy: ""
+
+failure_policy: "hard"   # "hard" or "soft"
+summary_output_path: "/var/tmp/satellite_prereqs_summary.json"
+
+# RPM DB check
+rpmdb_auto_fix: true
+rpmdb_backup_parent: "/var/backups"
+rpmdb_query_timeout: 120
+
+roles/satellite_prereqs/tasks/30_package_mgr.yml (remplacer entièrement)
+
+---
+# ======================================================================
+# Vérification du gestionnaire de paquets et du package subscription-manager
+# ======================================================================
+
+- name: "Détecter gestionnaire de paquets"
+  ansible.builtin.set_fact:
+    _pkg_mgr: "{{ 'dnf' if ansible_facts.pkg_mgr == 'dnf' else 'yum' }}"
+
+# ----------------------------------------------------------------------
+# 1️⃣ Vérification présence du package
+# ----------------------------------------------------------------------
+- name: "Vérifier si subscription-manager est installé"
+  ansible.builtin.command: "rpm -q subscription-manager"
+  changed_when: false
+  register: _rhsm_rpm
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 2️⃣ Installation conditionnelle si absent (contrôlée par auto_install_subscription_manager)
+# ----------------------------------------------------------------------
+- name: "Installer subscription-manager s'il est manquant (auto_install_subscription_manager={{ auto_install_subscription_manager }})"
+  when: (_rhsm_rpm.rc != 0) and auto_install_subscription_manager
+  block:
+    - name: "Vérifier disponibilité du package dans les dépôts activés"
+      ansible.builtin.command: "{{ _pkg_mgr }} -y list subscription-manager"
+      register: _rhsm_check_repo
+      changed_when: false
+      failed_when: false
+
+    - name: "Installer subscription-manager depuis dépôt si disponible"
+      when: _rhsm_check_repo.rc == 0
+      ansible.builtin.package:
+        name: subscription-manager
+        state: present
+      register: _rhsm_install
+
+    - name: "Alerte si le package n'est pas disponible dans les dépôts"
+      when: _rhsm_check_repo.rc != 0
+      ansible.builtin.debug:
+        msg: >
+          Le package 'subscription-manager' est introuvable dans les dépôts activés.
+          Activez les dépôts RHEL de base (BaseOS/AppStream) ou fournissez un dépôt interne
+          avant de poursuivre l’intégration Satellite.
+
+# ----------------------------------------------------------------------
+# 3️⃣ Vérification de la version (tolérante : ne casse pas si non installé)
+# ----------------------------------------------------------------------
+- name: "Récupérer la version de subscription-manager (si présent)"
+  ansible.builtin.shell: "rpm -q --qf '%{VERSION}' subscription-manager"
+  changed_when: false
+  register: _rhsm_ver
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 4️⃣ Vérifier si le système est déjà enregistré
+# ----------------------------------------------------------------------
+- name: "Déterminer si le système est déjà enregistré auprès du Satellite"
+  ansible.builtin.command: "subscription-manager identity"
+  changed_when: false
+  register: _sm_identity
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 5️⃣ Vérifier la disponibilité du package CA Katello
+# ----------------------------------------------------------------------
+- name: "Tester disponibilité du package katello-ca-consumer"
+  ansible.builtin.uri:
+    url: "{{ _sat_ca_rpm }}"
+    method: HEAD
+    follow_redirects: safe
+    status_code: [200]
+  register: _ca_head
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 6️⃣ Enregistrer la synthèse
+# ----------------------------------------------------------------------
+- name: "Synthèse package/rhsm"
+  vars:
+    _present_now: "{{ (_rhsm_rpm.rc == 0) or (_rhsm_install is defined and _rhsm_install.changed) }}"
+    _ver_ok: "{{ (_rhsm_ver.stdout | default('0')) is version(min_subscription_manager_version, '>=') }}"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({
+      'pkg_mgr': _pkg_mgr,
+      'subscription_manager_present': _present_now,
+      'subscription_manager_installed_now': (_rhsm_install is defined and _rhsm_install.changed) | default(false),
+      'subscription_manager_version_ok': _present_now and _ver_ok,
+      'already_registered': (_sm_identity.rc == 0),
+      'katello_ca_available': (_ca_head.status | default(0)) == 200
+    })}, recursive=True) }}"
+
+# ----------------------------------------------------------------------
+# 7️⃣ Messages récapitulatifs
+# ----------------------------------------------------------------------
+- name: "Afficher état du package subscription-manager"
+  ansible.builtin.debug:
+    msg:
+      - "Gestionnaire de paquets utilisé : {{ _pkg_mgr }}"
+      - "subscription-manager installé : {{ sat_precheck.checks.subscription_manager_present }}"
+      - "Installé durant ce run : {{ sat_precheck.checks.subscription_manager_installed_now }}"
+      - "Version OK (>= {{ min_subscription_manager_version }}) : {{ sat_precheck.checks.subscription_manager_version_ok }}"
+      - "Déjà enregistré : {{ sat_precheck.checks.already_registered }}"
+      - "CA Katello accessible : {{ sat_precheck.checks.katello_ca_available }}"
+
+> Rien d’autre n’est à changer dans tes autres fichiers (le résumé et la politique d’échec continuent de s’appuyer sur subscription_manager_present et subscription_manager_version_ok).
+Si tu veux, je peux aussi ajouter un paramètre required_repos_for_subscription_manager: [] et une tâche optionnelle pour activer des dépôts avant l’installation (utile sur des hôtes très “secs”).
+
+
+
