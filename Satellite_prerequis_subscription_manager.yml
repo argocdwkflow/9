@@ -1,0 +1,148 @@
+Parfait 👍 !
+Tu veux donc enrichir ton rôle satellite_prereqs pour vérifier la disponibilité du package subscription-manager (dans les dépôts) et l’installer automatiquement s’il est manquant.
+
+Je te donne ci-dessous le code complet et détaillé du fichier mis à jour :
+il s’agit du fichier roles/satellite_prereqs/tasks/30_package_mgr.yml, entièrement prêt à copier/coller dans ton projet.
+
+
+---
+
+✅ roles/satellite_prereqs/tasks/30_package_mgr.yml
+
+---
+# ======================================================================
+# Vérification du gestionnaire de paquets et du package subscription-manager
+# ======================================================================
+
+- name: "Détecter gestionnaire de paquets"
+  ansible.builtin.set_fact:
+    _pkg_mgr: "{{ 'dnf' if ansible_facts.pkg_mgr == 'dnf' else 'yum' }}"
+
+# ----------------------------------------------------------------------
+# 1️⃣ Vérification présence du package
+# ----------------------------------------------------------------------
+- name: "Vérifier si subscription-manager est installé"
+  ansible.builtin.command: "rpm -q subscription-manager"
+  changed_when: false
+  register: _rhsm_rpm
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 2️⃣ Installation si absent
+# ----------------------------------------------------------------------
+- name: "Installer subscription-manager s'il est manquant"
+  when: _rhsm_rpm.rc != 0
+  block:
+    - name: "Vérifier disponibilité du package dans les dépôts activés"
+      ansible.builtin.command: "{{ _pkg_mgr }} list subscription-manager"
+      register: _rhsm_check_repo
+      changed_when: false
+      failed_when: false
+
+    - name: "Installer subscription-manager depuis dépôt si disponible"
+      when: _rhsm_check_repo.rc == 0
+      ansible.builtin.package:
+        name: subscription-manager
+        state: present
+      register: _rhsm_install
+
+    - name: "Message si le package n'est pas disponible dans les dépôts"
+      when: _rhsm_check_repo.rc != 0
+      ansible.builtin.debug:
+        msg: >
+          Le package 'subscription-manager' est introuvable dans les dépôts
+          activés. Vous devez activer les dépôts RHEL Base/AppStream avant
+          de pouvoir continuer l’intégration Satellite.
+
+# ----------------------------------------------------------------------
+# 3️⃣ Vérification de la version
+# ----------------------------------------------------------------------
+- name: "Récupérer la version de subscription-manager"
+  ansible.builtin.shell: "rpm -q --qf '%{VERSION}' subscription-manager"
+  changed_when: false
+  register: _rhsm_ver
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 4️⃣ Vérifier si le système est déjà enregistré
+# ----------------------------------------------------------------------
+- name: "Déterminer si le système est déjà enregistré auprès du Satellite"
+  ansible.builtin.command: "subscription-manager identity"
+  changed_when: false
+  register: _sm_identity
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 5️⃣ Vérifier la disponibilité du package CA Katello
+# ----------------------------------------------------------------------
+- name: "Tester disponibilité du package katello-ca-consumer"
+  ansible.builtin.uri:
+    url: "{{ _sat_ca_rpm }}"
+    method: HEAD
+    follow_redirects: safe
+    status_code: [200]
+  register: _ca_head
+  failed_when: false
+
+# ----------------------------------------------------------------------
+# 6️⃣ Enregistrer la synthèse
+# ----------------------------------------------------------------------
+- name: "Synthèse package/rhsm"
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'checks': sat_precheck.checks | combine({
+      'pkg_mgr': _pkg_mgr,
+      'subscription_manager_present': (_rhsm_rpm.rc == 0) or (_rhsm_install is defined and _rhsm_install.changed),
+      'subscription_manager_version_ok': (_rhsm_ver.stdout is version(min_subscription_manager_version, '>=')),
+      'subscription_manager_installed_now': (_rhsm_install is defined and _rhsm_install.changed) | default(false),
+      'already_registered': (_sm_identity.rc == 0),
+      'katello_ca_available': (_ca_head.status | default(0)) == 200
+    })}, recursive=True) }}"
+
+# ----------------------------------------------------------------------
+# 7️⃣ Messages récapitulatifs
+# ----------------------------------------------------------------------
+- name: "Afficher état du package subscription-manager"
+  ansible.builtin.debug:
+    msg:
+      - "Gestionnaire de paquets utilisé : {{ _pkg_mgr }}"
+      - "subscription-manager installé : {{ (_rhsm_rpm.rc == 0) or (_rhsm_install is defined and _rhsm_install.changed) }}"
+      - "Version : {{ _rhsm_ver.stdout | default('inconnue') }}"
+      - "CA Katello accessible : {{ (_ca_head.status | default(0)) == 200 }}"
+
+
+---
+
+💡 Explications
+
+Étape	Description
+
+1	Vérifie si subscription-manager est installé via rpm -q.
+2	Si absent, vérifie sa disponibilité dans les dépôts avec dnf list ou yum list, puis l’installe avec le module package.
+3	Récupère la version installée (rpm -q --qf).
+4	Vérifie si le système est déjà enregistré.
+5	Teste la disponibilité du RPM CA Katello depuis le Satellite (HEAD sur /pub/...).
+6	Met à jour la variable sat_precheck.checks avec toutes les infos (présent, version, installation effectuée, etc.).
+7	Affiche un résumé clair dans la sortie Ansible.
+
+
+
+---
+
+🧩 Résultat JSON attendu (dans summary_output_path)
+
+Exemple après exécution :
+
+"checks": {
+  "pkg_mgr": "dnf",
+  "subscription_manager_present": true,
+  "subscription_manager_installed_now": false,
+  "subscription_manager_version_ok": true,
+  "already_registered": false,
+  "katello_ca_available": true
+}
+
+
+---
+
+Souhaites-tu que j’ajoute aussi un paramètre de contrôle (par ex. auto_install_subscription_manager: true|false) dans defaults/main.yml pour rendre cette installation optionnelle ?
+
