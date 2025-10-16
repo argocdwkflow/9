@@ -1,0 +1,88 @@
+Excellente remarque 👌 — et non, malheureusement,
+👉 tu ne pourras pas faire de nouvel enregistrement de machines si le Satellite principal est en panne.
+
+Je t’explique clairement pourquoi 👇
+
+
+---
+
+⚙️ 1️⃣ Enregistrement initial = dépendance au Satellite
+
+Quand tu fais :
+
+subscription-manager register --org="ORG" --activationkey="KEY"
+
+➡️ Le client contacte le Satellite (katello-service / candlepin) pour :
+
+Authentifier le manifest / activation key
+
+Créer l’entrée du système dans Foreman / Katello
+
+Associer le client à une capsule (Smart Proxy)
+
+Récupérer les certificats SSL et l’URL de base de contenu
+
+
+
+---
+
+❌ Si le Satellite est HS :
+
+Les services suivants sont indisponibles :
+
+Candlepin → impossible de valider l’enregistrement ou l’activation key
+
+Foreman → impossible de créer l’host dans la base
+
+Certs → pas de génération du certificat d’accès contenu
+
+Katello → pas de mapping des repos à la machine
+
+
+> 👉 Résultat : subscription-manager register échoue avec erreur du type
+Unable to reach the server ou Candlepin service not available.
+
+
+
+
+---
+
+⚙️ 2️⃣ Cas d’une machine déjà enregistrée avant la panne
+
+Si la machine est déjà enregistrée :
+
+Elle peut continuer à consommer le contenu depuis sa capsule (dnf update ou yum install)
+
+Elle ne dépend plus directement du Satellite pour ces actions, car tout passe par la capsule configurée dans /etc/yum.repos.d/redhat.repo.
+
+
+
+---
+
+💡 3️⃣ Possibilités de contournement (préventif)
+
+Si tu veux pouvoir enregistrer même en cas de panne Satellite, voici les options :
+
+Méthode	Description	Limite
+
+🧩 Capsule avec registration proxy	Configurer les capsules avec le rôle foreman-proxy-content + registration pour gérer localement les certificats et les metadata	Toujours besoin d’un lien vers le Satellite à la première synchro
+💾 Mode disconnected / export-import	Exporter les metadata, certificats, et contenus depuis Satellite vers un serveur isolé (offline clone)	Complexe à maintenir, pas temps réel
+💡 HA Satellite (cluster ou VM standby)	Avoir un Satellite secondaire prêt à reprendre les services Candlepin/Foreman	Nécessite réplication DB PostgreSQL
+🔑 Pré-enregistrer des hosts templates (activation key + kickstart)	Les machines déjà connues pourront réinstaller via capsule	Ne couvre pas les nouveaux hôtes
+
+
+
+---
+
+🧭 Conclusion
+
+Action	Possible si Satellite tombe ?
+
+✅ Patch / install paquets via capsule (contenu déjà sync)	✅ Oui
+🔄 Sync nouveau contenu depuis Red Hat CDN	❌ Non
+➕ Enregistrer de nouvelles machines	❌ Non
+🧾 Reporting / tâches / Content View promotion	❌ Non
+🔍 Consommation locale via capsule déjà enregistrée	✅ Oui
+
+
+
