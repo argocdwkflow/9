@@ -1,0 +1,244 @@
+Parfait — on verrouille le projet 100% Red Hat Enterprise Linux uniquement (RHEL 6 / 7 / 8 / 10), et on refuse tout autre OS.
+Tu gardes ton repo minimal (un seul playbook), et le rôle externe ne gère que RHEL.
+
+
+---
+
+Arborescence du projet GitLab (minimal)
+
+ansible-obstools/
+├── playbooks/
+│   └── obstools.yml      # Playbook unique
+├── README.md
+└── .gitignore
+
+playbooks/obstools.yml
+
+---
+- name: Installer / mettre à jour les paquets OBSTOOLS (RHEL only)
+  hosts: all
+  become: true
+
+  vars:
+    # Paquets possibles
+    all_obs_packages: [obsutils, rearutils, lparutils, fnarutils]
+
+    # Injecté par la Survey AAP (multi-select) : obstools_packages
+    selected_packages: >-
+      {{ all_obs_packages
+         if ('all' in (obstools_packages | default([])))
+         else (obstools_packages | default([])) }}
+
+  pre_tasks:
+    - name: Refuser tout OS non RedHat
+      assert:
+        that:
+          - ansible_facts.os_family == 'RedHat'
+        fail_msg: "OS non supporté. Ce playbook est uniquement pour RHEL 6/7/8/10."
+
+    - name: Refuser versions RHEL non supportées
+      assert:
+        that:
+          - (ansible_facts.distribution_major_version | int) in [6,7,8,10]
+        fail_msg: "Version RHEL non supportée. Autorisées: 6, 7, 8, 10."
+
+    - name: Vérifier qu'au moins un paquet est sélectionné
+      assert:
+        that:
+          - selected_packages | length > 0
+        fail_msg: "Aucun paquet sélectionné."
+
+    - name: Afficher la sélection finale
+      debug:
+        msg: "Paquets à traiter : {{ selected_packages }}"
+
+  roles:
+    # ← rôle externe (dans ton EE / collection), RHEL-only
+    - role: myorg.obstools.obstools
+      vars:
+        obstools_package_name: "{{ selected_packages }}"
+        obstools_state: "{{ obstools_state | default('latest') }}"
+
+> Survey AAP (Job Template)
+
+obstools_packages → Multiple Choice (multiple select) : obsutils, rearutils, lparutils, fnarutils, all
+
+obstools_state → Multiple Choice (single select) : present, latest (default latest)
+
+
+
+
+
+---
+
+Rôle RHEL-only (à déployer ailleurs)
+
+Tu peux le garder en collection myorg.obstools (recommandé).
+Arborescence (côté collection) :
+
+myorg-obstools-collection/
+├── galaxy.yml
+└── roles/
+    └── obstools/
+        ├── defaults/main.yml
+        ├── handlers/main.yml
+        ├── meta/main.yml
+        ├── tasks/
+        │   ├── main.yml
+        │   ├── repo_rhel6_7.yml
+        │   └── repo_rhel8_10.yml
+        └── templates/obstools.repo.j2
+
+galaxy.yml
+
+namespace: myorg
+name: obstools
+version: 1.0.0
+readme: README.md
+authors: ["Equipe OBSTools"]
+description: "Déploie le dépôt obstools et installe/MAJ des paquets sur RHEL 6/7/8/10."
+license: MIT
+
+roles/obstools/meta/main.yml
+
+---
+galaxy_info:
+  role_name: obstools
+  author: myorg
+  description: "RHEL-only: repo obstools + installation/MAJ de paquets."
+  license: MIT
+  min_ansible_version: "2.12"
+  platforms:
+    - name: EL
+      versions: ["6", "7", "8", "10"]
+dependencies: []
+
+roles/obstools/defaults/main.yml
+
+---
+# RHEL uniquement
+obstools_repo_name: obstools
+obstools_repo_baseurl: "https://repo.example.com/obstools/el/$releasever/$basearch"
+obstools_repo_gpgcheck: true
+obstools_repo_gpgkey: "https://repo.example.com/keys/RPM-GPG-KEY-OBSTOOLS"
+
+# Le playbook passera une liste (ou string) ici
+obstools_package_name: []
+obstools_state: "latest"   # present|latest
+
+roles/obstools/templates/obstools.repo.j2
+
+[{{ obstools_repo_name }}]
+name={{ obstools_repo_name | capitalize }} Repository
+baseurl={{ obstools_repo_baseurl }}
+enabled=1
+gpgcheck={{ 1 if obstools_repo_gpgcheck else 0 }}
+{% if obstools_repo_gpgcheck and obstools_repo_gpgkey %}
+gpgkey={{ obstools_repo_gpgkey }}
+{% endif %}
+
+roles/obstools/handlers/main.yml
+
+---
+- name: yum makecache (RHEL 6/7)
+  listen: yum-makecache
+  command: yum -y makecache fast
+  when: (ansible_facts.distribution_major_version | int) in [6,7]
+
+- name: dnf makecache (RHEL 8/10)
+  listen: dnf-makecache
+  command: dnf makecache
+  when: (ansible_facts.distribution_major_version | int) in [8,10]
+
+roles/obstools/tasks/repo_rhel6_7.yml
+
+---
+- name: Déployer le dépôt obstools (RHEL 6/7)
+  template:
+    src: obstools.repo.j2
+    dest: /etc/yum.repos.d/obstools.repo
+    owner: root
+    group: root
+    mode: '0644'
+  notify: yum-makecache
+
+roles/obstools/tasks/repo_rhel8_10.yml
+
+---
+- name: Déployer le dépôt obstools (RHEL 8/10)
+  template:
+    src: obstools.repo.j2
+    dest: /etc/yum.repos.d/obstools.repo
+    owner: root
+    group: root
+    mode: '0644'
+  notify: dnf-makecache
+
+roles/obstools/tasks/main.yml
+
+---
+- name: Stop si OS non RedHat (sécurité supplémentaire)
+  assert:
+    that:
+      - ansible_facts.os_family == 'RedHat'
+  fail_msg: "Ce rôle est RHEL-only."
+
+- name: Inclure tâches dépôt selon version RHEL
+  include_tasks: repo_rhel6_7.yml
+  when: (ansible_facts.distribution_major_version | int) in [6,7]
+
+- name: Inclure tâches dépôt selon version RHEL
+  include_tasks: repo_rhel8_10.yml
+  when: (ansible_facts.distribution_major_version | int) in [8,10]
+
+- name: Normaliser la variable paquets en **liste**
+  set_fact:
+    _obstools_pkgs: >-
+      {{ [obstools_package_name] if (obstools_package_name is string)
+         else (obstools_package_name | default([])) }}
+
+- name: Vérifier qu'au moins un paquet est donné
+  assert:
+    that:
+      - _obstools_pkgs | length > 0
+    fail_msg: "Aucun paquet fourni à 'obstools_package_name'."
+
+- name: Installer / mettre à jour le(s) paquet(s)
+  package:
+    name: "{{ _obstools_pkgs }}"
+    state: "{{ obstools_state }}"
+
+
+---
+
+Points d’attention RHEL 6 (très important)
+
+RHEL 6 tourne avec Python 2. Sur AAP récents, précise pour ces hôtes :
+dans l’Inventory (AAP) → host vars du groupe/host RHEL6 :
+
+ansible_python_interpreter: /usr/bin/python2
+
+Le module dnf n’existe pas en RHEL 6/7 → on utilise yum/package + handler yum makecache fast.
+
+Si tes hôtes RHEL 6 n’ont pas python2 ou python-simplejson, installe-les manuellement au tout début (ou via un “raw” task séparé si nécessaire).
+
+
+
+---
+
+Intégration AAP (rappel)
+
+Project → ton repo ansible-obstools (playbook unique).
+
+Execution Environment → doit contenir la collection myorg.obstools (ou le rôle seul dans roles_path).
+
+Inventory → tes hôtes RHEL ; ajoute ansible_python_interpreter pour RHEL 6.
+
+Job Template → playbooks/obstools.yml + Survey (paquets / état).
+
+
+
+---
+
+Si tu veux, je peux te pré-remplir obstools_repo_baseurl et obstools_repo_gpgkey avec tes vraies URLs, et te donner un petit execution-environment.yml pour builder un EE contenant la collection.
+
