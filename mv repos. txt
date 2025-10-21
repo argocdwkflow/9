@@ -64,3 +64,80 @@ Crée le dossier /etc/yum.repos.d/arc s’il n’existe pas déjà.
 Déplace tous les fichiers .repo du dossier /etc/yum.repos.d/ vers arc/.
 
 Ignore les serveurs vides ou c
+
+
+Parfait 👍 ta capture montre que le script fonctionne bien — il s’exécute jusqu’au bout et affiche :
+
+> Aucun fichier à déplacer
+
+
+
+Cela veut simplement dire qu’il n’y avait aucun fichier .repo à déplacer dans /etc/yum.repos.d/ sur ce serveur.
+
+
+---
+
+🔍 Détails de l’erreur affichée
+
+mv: cannot stat '/etc/yum.repos.d/*.repo': No such file or directory
+Aucun fichier à déplacer
+
+Traduction : la commande mv n’a trouvé aucun fichier correspondant à *.repo.
+C’est normal et sans gravité — ça veut dire que :
+
+soit le répertoire /etc/yum.repos.d/ est vide,
+
+soit les fichiers .repo ont déjà été déplacés,
+
+soit les dépôts sont gérés autrement (par Satellite, par exemple via redhat.repo automatique).
+
+
+
+---
+
+Pour ne plus afficher ce message « mv: cannot stat »
+
+Tu peux légèrement modifier le script pour éviter l’erreur et n’afficher que “Aucun fichier à déplacer” quand il n’y a rien :
+
+#!/bin/bash
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 liste_serveurs.txt"
+  exit 1
+fi
+
+LISTE_SERVEURS="$1"
+
+while read -r SERVEUR; do
+  [ -z "$SERVEUR" ] && continue
+  [[ "$SERVEUR" =~ ^# ]] && continue
+
+  echo "Connexion à $SERVEUR ..."
+  ssh "$SERVEUR" '
+    mkdir -p /etc/yum.repos.d/archive
+    shopt -s nullglob
+    FILES=(/etc/yum.repos.d/*.repo)
+    if [ ${#FILES[@]} -eq 0 ]; then
+      echo "Aucun fichier à déplacer"
+    else
+      mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/archive/
+      echo "Fichiers déplacés vers archive/"
+    fi
+  '
+done < "$LISTE_SERVEURS"
+
+echo "✅ Déplacement terminé sur tous les serveurs."
+
+
+---
+
+Résumé
+
+Le script fonctionne : il boucle sur tes serveurs.
+
+Message mv: cannot stat = aucun fichier .repo trouvé → pas une erreur bloquante.
+
+La version ci-dessus masque ce message et affiche simplement un texte clair.
+
+
+Souhaites-tu que je t’ajoute une ligne pour vérifier et afficher les fichiers déplacés sur chaque serveur (ex : ls /etc/yum.repos.d/archive après le déplacement) ?
