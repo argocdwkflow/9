@@ -1,0 +1,66 @@
+
+Il prend un seul argument : le fichier texte contenant la liste des serveurs.
+Pour chaque serveur, il se connecte en SSH et déplace tous les fichiers de /etc/yum.repos.d/ vers /etc/yum.repos.d/arc/.
+
+
+---
+
+Script simple — move_repo_files.sh
+
+#!/bin/bash
+
+# Vérifie qu'un fichier liste des serveurs est fourni
+if [ -z "$1" ]; then
+  echo "Usage: $0 liste_serveurs.txt"
+  exit 1
+fi
+
+SERVER_LIST="$1"
+
+# Vérifie que le fichier existe
+if [ ! -f "$SERVER_LIST" ]; then
+  echo "Erreur : fichier '$SERVER_LIST' introuvable."
+  exit 1
+fi
+
+# Boucle sur chaque serveur
+while read -r SERVER; do
+  # Ignore les lignes vides ou commentaires
+  [[ -z "$SERVER" || "$SERVER" =~ ^# ]] && continue
+
+  echo "==> Connexion à $SERVER ..."
+
+  ssh "$SERVER" "sudo mkdir -p /etc/yum.repos.d/archive && \
+                 sudo mv -v /etc/yum.repos.d/*.repo /etc/yum.repos.d/arc/ 2>/dev/null || echo 'Aucun fichier à déplacer'"
+
+done < "$SERVER_LIST"
+
+echo "Déplacement terminé sur tous les serveurs."
+
+
+---
+
+Exemple de fichier serveurs.txt
+
+# Liste des serveurs RHEL
+rhel-app-01
+rhel-db-02
+192.168.10.15
+
+
+---
+
+ Utilisation
+chmod +x move_repo_files.sh
+./move_repo_files.sh serveurs.txt
+
+
+---
+
+Ce que fait le script
+
+Crée le dossier /etc/yum.repos.d/arc s’il n’existe pas déjà.
+
+Déplace tous les fichiers .repo du dossier /etc/yum.repos.d/ vers arc/.
+
+Ignore les serveurs vides ou c
