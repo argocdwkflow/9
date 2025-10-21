@@ -1,0 +1,74 @@
+Excellent réflexe 👍 — oui, dans Red Hat Satellite, dès que tu utilises les commandes hammer, il est fortement recommandé (et parfois obligatoire) d’ajouter le nom de l’organisation via l’option --organization.
+
+
+---
+
+💡 Exemple complet
+
+Si ton organisation s’appelle par exemple "ACME",
+et que tu veux associer ton Activation Key à un Composite Content View (CCV) nommé rhel9-base,
+et au lifecycle environment DEV,
+voici la commande complète 👇
+
+hammer activation-key update \
+  --name "rhel9-key" \
+  --organization "ACME" \
+  --content-view "rhel9-base" \
+  --lifecycle-environment "DEV"
+
+
+---
+
+🔍 Pour vérifier les AK existantes
+
+hammer activation-key list --organization "ACME"
+
+🔍 Pour afficher le détail d’une AK
+
+hammer activation-key info \
+  --name "rhel9-key" \
+  --organization "ACME"
+
+Tu y verras :
+
+Le Content View associé
+
+Le Lifecycle Environment
+
+La liste des repositories actifs
+
+
+
+---
+
+✅ Résumé du flux complet après modification du CCV
+
+1. Publie une nouvelle version du CCV
+
+hammer content-view publish --name "rhel9-base" --organization "ACME"
+
+
+2. Promeus-la vers ton environnement cible
+
+hammer content-view version promote \
+  --content-view "rhel9-base" \
+  --organization "ACME" \
+  --to-lifecycle-environment "DEV"
+
+
+3. Mets à jour ton Activation Key avec cette nouvelle version du CCV
+(comme la commande ci-dessus)
+
+
+4. Vérifie ensuite sur un client enregistré :
+
+subscription-manager repos --list
+
+
+
+
+---
+
+Souhaites-tu que je t’indique comment automatiser cette mise à jour (par exemple via script ou Ansible chaque fois qu’un CCV est publié) ?
+C’est très utile pour éviter ce genre de désynchronisation entre CCV et Activation Keys.
+
