@@ -1,0 +1,15 @@
+
+
+Root Cause:
+The findmnt --verify command reported Ext4 does not match with on-disk ext2 because the filesystem superblock was still labeled as ext2, while the system was mounting it as ext4. This mismatch usually happens when an older ext2/ext3 filesystem was upgraded to ext4 without updating the filesystem metadata.
+
+Resolution:
+The issue was resolved by checking the actual filesystem type (blkid, tune2fs), confirming ext4 features were active, and updating the superblock using:
+
+tune2fs -O extents,uninit_bg,dir_index /dev/<device>
+e2fsck -f /dev/<device>
+
+After correction, findmnt --verify no longer reports inconsistencies.
+
+
+---
