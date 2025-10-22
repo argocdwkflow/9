@@ -44,11 +44,98 @@ dmesg --ctime | grep "Oct 21 13:0"
 
 
 ---
+Merci pour la photo 🔍
 
-🧠 4. 
-Étape	Commande	Objectif
+Je vois clairement sur ton écran des messages du kernel Linux contenant :
 
-Journal systemd	journalctl --since "13:00" --until "13:10"	Voir tout ce qui s’est passé
-Filtrer erreurs	`grep -Ei "error	fail
-Kernel logs	dmesg --ctime	Détection gel matériel ou kernel
-McAfee l
+ACPI Error: Method parse/execution failed \_SB.PCI0...
+
+et des erreurs du type :
+
+AE_AML_BUFFER_LIMIT
+
+
+---
+
+🧩 Analyse du message
+
+Ces lignes viennent du sous-système ACPI (Advanced Configuration and Power Interface), qui gère :
+
+L’énergie (suspend, hibernate, CPU states),
+
+Le matériel embarqué (BIOS, chipset, etc.),
+
+Les événements thermiques.
+
+
+Les erreurs du type :
+
+ACPI Error: Method parse/execution failed
+ACPI Error: AE_AML_BUFFER_LIMIT
+
+signifient que le BIOS ou le firmware envoie des tables ACPI corrompues ou mal formées, et que le noyau Linux n’arrive pas à exécuter les méthodes ACPI correspondantes.
+
+
+---
+
+⚠️ Impact possible
+
+Freeze temporaire du système, surtout au moment d’un événement matériel (veille, changement de fréquence CPU, ou scan antivirus).
+
+Charge CPU élevée du processus kworker ou acpi pendant les tentatives d’exécution.
+
+Peut être déclenché aussi par un agent tiers (comme McAfee ou TIBCO) s’ils sollicitent intensément le kernel ou le matériel à ce moment.
+
+
+
+---
+
+🧭 Actions recommandées
+
+1. Vérifier si d’autres erreurs apparaissent juste avant / après
+
+journalctl --since "2025-10-21 13:00" --until "2025-10-21 13:10" | grep -Ei "ACPI|kernel|error|fail|blocked|freeze"
+
+2. Vérifier la version du kernel
+
+uname -r
+
+→ Si tu es sur un kernel RHEL 8.8 ou 8.9, ces bugs ACPI sont connus sur certains firmwares HP/Dell.
+
+3. Vérifier ton firmware BIOS
+
+dmidecode -s bios-version
+dmidecode -s system-product-name
+
+Compare avec la dernière version disponible sur le site du constructeur HP (souvent un correctif ACPI existe).
+
+4. En attendant le correctif BIOS :
+
+Tu peux désactiver les messages ACPI bruyants :
+
+grubby --update-kernel=ALL --args="acpi=strict"
+
+ou
+
+grubby --update-kernel=ALL --args="acpi=noirq"
+
+(⚠️ à tester avec prudence — reboot requis)
+
+
+---
+
+
+
+Cause probable : Bug BIOS/firmware ACPI (souvent sur HP ProDesk / EliteBook / ProLiant).
+
+Conséquence : Gel système temporaire ou CPU élevé.
+
+Corrigé par : mise à jour BIOS ou kernel (yum update kernel).
+
+Contexte : McAfee a pu amplifier le gel en déclenchant une opération sur le CPU/firmware.
+
+
+
+---
+
+Souhaites-tu que je t’envoie une commande qui corrèle automatiquement les erreurs ACPI + pics CPU + McAfee logs 
