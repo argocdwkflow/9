@@ -1,1 +1,118 @@
-.
+.Excellent — ta capture montre que tu as bien identifié le problème de bibliothèque dynamique manquante (libclntsh.so) après le patch kernel, et que la solution temporaire proposée est de définir la variable LD_LIBRARY_PATH.
+
+
+---
+
+🧩 Contexte du problème
+
+Après ton patch kernel, Apache (ou le WebLogic Plugin) ne parvient plus à charger les bibliothèques Oracle nécessaires à la connexion SSL (comme libclntsh.so, utilisée pour Oracle Client / Wallet / SSL).
+C’est cohérent avec ton erreur précédente :
+
+wl_ssl_init: The SSL init failed status: 1
+Error initializing SSL: Return value is -2
+
+👉 Cela indique un échec de chargement des bibliothèques SSL Oracle côté Apache/WebLogic Plugin.
+
+
+---
+
+🔍 Diagnostic que tu as déjà fait
+
+Tu as exécuté :
+
+sudo find / -name libclntsh.so
+
+Résultat :
+
+/home/wmle15p/wls-plugin/libclntsh.so
+/usr/lib64/httpd/modules/wls-plugin/libclntsh.so
+/usr/lib64/libclntsh.so
+
+Donc la librairie est bien là, mais Apache ne la trouve pas lors de l’exécution du plugin.
+Cela veut dire que le chemin de la librairie n’est pas dans le linker dynamique (ld.so).
+
+
+---
+
+✅ Solution temporaire (test)
+
+Tu peux tester immédiatement en ajoutant la variable d’environnement avant de lancer Apache :
+
+export LD_LIBRARY_PATH=/usr/lib64/httpd/modules/wls-plugin:$LD_LIBRARY_PATH
+systemctl restart httpd
+
+Puis vérifie :
+
+ldd /etc/httpd/modules/mod_weblogic.so | grep clntsh
+
+Si maintenant le lien vers libclntsh.so est résolu, le bridge WebLogic devrait refonctionner.
+
+
+---
+
+✅ Solution permanente (recommandée)
+
+Pour rendre cette configuration persistante :
+
+Option 1 – via /etc/ld.so.conf.d/
+
+Crée un fichier spécifique :
+
+echo "/usr/lib64/httpd/modules/wls-plugin" > /etc/ld.so.conf.d/wls-plugin.conf
+ldconfig
+
+Cela ajoute définitivement le chemin dans le cache des bibliothèques dynamiques.
+
+
+---
+
+Option 2 – via la conf Apache (si tu préfères éviter ldconfig)
+
+Ajoute la variable dans le fichier d’environnement Apache :
+
+Sur RHEL :
+
+vi /etc/sysconfig/httpd
+
+Et ajoute :
+
+LD_LIBRARY_PATH=/usr/lib64/httpd/modules/wls-plugin:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH
+
+Puis redémarre :
+
+systemctl restart httpd
+
+
+
+---
+
+⚙️ Vérification finale
+
+Après le redémarrage, fais :
+
+ldd /etc/httpd/modules/mod_weblogic.so | grep "not found"
+
+→ Aucune ligne “not found” ne doit apparaître.
+Puis :
+
+journalctl -xeu httpd
+
+→ Plus de messages wl_ssl_init failed.
+
+
+---
+
+💡 Bon à savoir
+
+Ce type d’erreur apparaît souvent après un patch kernel ou un patch OpenSSL, car :
+
+les chemins de runtime changent (lib64, /usr/lib64/httpd, etc.),
+
+ou le cache ldconfig est réinitialisé.
+
+
+
+---
+
+Souhaites-tu que je t’envoie le script complet pour automatiser la vérification et la correction de LD_LIBRARY_PATH et ldconfig, pour l’intégrer à ton post-patch-check Linux ?
