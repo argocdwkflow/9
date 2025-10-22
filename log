@@ -1,0 +1,54 @@
+Très bonne approche 👏 — tu veux vérifier si le système a eu un bug, un gel (freeze) ou un comportement anormal hier vers 13h05.
+
+Voici la méthode complète et fiable pour analyser ça sur RHEL / Linux 👇
+
+
+---
+
+🧭 1. Analyser les journaux système autour de 13h05
+
+Utilise journalctl pour extraire uniquement la période critique :
+
+journalctl --since "2025-10-21 13:00:00" --until "2025-10-21 13:10:00" > /tmp/journal-1305.log
+less /tmp/journal-1305.log
+
+➡️ Regarde les messages du kernel (kernel:), des services (systemd:) ou du matériel (ata, cpu, memory, i915, NMI, etc.).
+Tu peux filtrer les erreurs avec :
+
+grep -Ei "error|fail|warn|panic|hung|freeze|blocked|oom" /tmp/journal-1305.log
+
+
+---
+
+⚙️ 2. Vérifier les logs système classiques
+
+Certaines erreurs critiques sont aussi dans /var/log/messages :
+
+grep "Oct 21 13:0" /var/log/messages
+grep -Ei "kernel|cpu|freeze|hung|blocked|NMI|mcafee|tibco" /var/log/messages | grep "Oct 21 13:0"
+
+> 💡 Cela montre si le kernel ou un service comme McAfee, TIBCO ou systemd a bloqué.
+
+
+
+
+---
+
+🧩 3. Vérifier les événements kernel (gel CPU, OOM, etc.)
+
+dmesg --ctime | grep -Ei "error|warn|hung|stall|freeze|blocked|NMI|Call Trace"
+
+ou plus ciblé :
+
+dmesg --ctime | grep "Oct 21 13:0"
+
+
+---
+
+🧠 4. 
+Étape	Commande	Objectif
+
+Journal systemd	journalctl --since "13:00" --until "13:10"	Voir tout ce qui s’est passé
+Filtrer erreurs	`grep -Ei "error	fail
+Kernel logs	dmesg --ctime	Détection gel matériel ou kernel
+McAfee l
