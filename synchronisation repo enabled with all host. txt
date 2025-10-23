@@ -6,8 +6,7 @@ for host in $(hammer host list --organization "ACME" --search "lifecycle_environ
     --value 1
 done
 ----
-hammer host subscription set-repository-override \
-  --organization "BP21 BNS" \
-  --name "nom_du_serveur" \
-  --content-label "rhel-9-for-ibm-z-systems-baseos-rpms" \
-  --value 1
+ORG="obsibmz"; LCE="dev"; LABEL="rhel-9-for-s390x-baseos-eus-rpms"
+for H in $(hammer host list --organization "$ORG" --search "lifecycle_environment = $LCE" --fields Name --no-headers); do
+  hammer host subscription enabled-repositories --host "$H" --enable "$LABEL"
+done
