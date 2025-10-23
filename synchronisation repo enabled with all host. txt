@@ -1,0 +1,7 @@
+for host in $(hammer host list --organization "ACME" --search "lifecycle_environment = DEV" --fields Name --no-headers); do
+  hammer host subscription set-repository-override \
+    --organization "ACME" \
+    --name "$host" \
+    --content-label "rhel-9-for-s390x-baseos-rpms" \
+    --value 1
+done
