@@ -1,0 +1,62 @@
+Parfait 👍 — tu veux donc extraire les métriques CPU, load average et mémoire entre 12h30 et 14h30 du 29 octobre 2025 à partir des fichiers collectés par sar sur RHEL 7 (comme dans ton image).
+
+
+---
+
+✅ Voici les commandes exactes à exécuter :
+
+🔹 1. CPU usage (user, system, iowait, idle…)
+
+sar -u -s 12:30:00 -e 14:30:00 -f /var/log/sa/sa29
+
+🔹 2. Run queue et load average
+
+sar -q -s 12:30:00 -e 14:30:00 -f /var/log/sa/sa29
+
+🔹 3. Mémoire utilisée / libre / cache / buffers
+
+sar -r -s 12:30:00 -e 14:30:00 -f /var/log/sa/sa29
+
+
+---
+
+📁 Pour tout sauvegarder dans un fichier texte
+
+Tu peux tout regrouper ainsi :
+
+{
+  echo "=== CPU ==="
+  sar -u -s 12:30:00 -e 14:30:00 -f /var/log/sa/sa29
+  echo
+  echo "=== LOAD AVERAGE ==="
+  sar -q -s 12:30:00 -e 14:30:00 -f /var/log/sa/sa29
+  echo
+  echo "=== MEMORY ==="
+  sar -r -s 12:30:00 -e 14:30:00 -f /var/log/sa/sa29
+} > /root/sar_29Oct_1230_1430.txt
+
+Le fichier final sera :
+
+/root/sar_29Oct_1230_1430.txt
+
+
+---
+
+🧠 Vérification préalable
+
+Assure-toi que les logs sysstat/sar du 29 octobre existent :
+
+ls -lh /var/log/sa/
+
+Tu dois voir un fichier nommé :
+
+sa29
+
+S’il n’existe pas, cela veut dire que le service sysstat n’était pas activé à cette date :
+
+systemctl status sysstat
+
+
+---
+
+Souhaites-tu que je t’ajoute aussi les I/O (disques) et swap dans la même fenêtre horaire (utile pour corréler un pic CPU) ?
